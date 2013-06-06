@@ -13,7 +13,7 @@ module Sidekiq
     config.autoload_paths << File.expand_path("#{config.root}/app/workers") if File.exist?("#{config.root}/app/workers")
 
     initializer 'sidekiq' do
-      Sidekiq.hook_rails!
+      # Sidekiq.hook_rails!
     end
   end if defined?(::Rails)
 end
