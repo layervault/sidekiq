@@ -16,8 +16,6 @@ module Sidekiq
     include Util
     include Actor
 
-    task_class TaskThread
-
     def self.default_middleware
       Middleware::Chain.new do |m|
         m.add Middleware::Server::Logging
@@ -26,10 +24,7 @@ module Sidekiq
       end
     end
 
-    # store the actual working thread so we
-    # can later kill if it necessary during
-    # hard shutdown.
-    attr_accessor :actual_work_thread
+    attr_accessor :proxy_id
 
     def initialize(boss)
       @boss = boss
@@ -39,37 +34,58 @@ module Sidekiq
       msgstr = work.message
       queue = work.queue_name
 
-      @actual_work_thread = Thread.current
-      begin
-        msg = Sidekiq.load_json(msgstr)
-        klass  = msg['class'].constantize
-        worker = klass.new
-        worker.jid = msg['jid']
+      do_defer do
+        @boss.async.real_thread(proxy_id, Thread.current)
 
-        stats(worker, msg, queue) do
-          Sidekiq.server_middleware.invoke(worker, msg, queue) do
-            worker.perform(*cloned(msg['args']))
+        ack = true
+        begin
+          msg = Sidekiq.load_json(msgstr)
+          klass  = msg['class'].constantize
+          worker = klass.new
+          worker.jid = msg['jid']
+
+          stats(worker, msg, queue) do
+            Sidekiq.server_middleware.invoke(worker, msg, queue) do
+              worker.perform(*cloned(msg['args']))
+            end
           end
+        rescue Sidekiq::Shutdown
+          # Had to force kill this job because it didn't finish
+          # within the timeout.  Don't acknowledge the work since
+          # we didn't properly finish it.
+          ack = false
+        rescue Exception => ex
+          handle_exception(ex, msg || { :message => msgstr })
+          raise
+        ensure
+          work.acknowledge if ack
         end
-      rescue Sidekiq::Shutdown
-        # Had to force kill this job because it didn't finish
-        # within the timeout.
-      rescue Exception => ex
-        handle_exception(ex, msg || { :message => msgstr })
-        raise
-      ensure
-        work.acknowledge
       end
 
       @boss.async.processor_done(current_actor)
     end
 
-    # See http://github.com/tarcieri/celluloid/issues/22
     def inspect
-      "#<Processor #{to_s}>"
+      "<Processor##{object_id.to_s(16)}>"
     end
 
     private
+
+    # We use Celluloid's defer to workaround tiny little
+    # Fiber stacks (4kb!) in MRI 1.9.
+    #
+    # For some reason, Celluloid's thread dispatch, TaskThread,
+    # is unstable under heavy concurrency but TaskFiber has proven
+    # itself stable.
+    NEED_DEFER = (RUBY_ENGINE == 'ruby' && RUBY_VERSION < '2.0.0')
+
+    def do_defer(&block)
+      if NEED_DEFER
+        defer(&block)
+      else
+        yield
+      end
+    end
 
     def identity
       @str ||= "#{hostname}:#{process_id}-#{Thread.current.object_id}:default"

@@ -1,3 +1,146 @@
+2.17.0
+-----------
+
+- Change `Sidekiq::Client#push_bulk` to return an array of pushed `jid`s. [#1315, barelyknown]
+- Web UI refactoring to use more API internally (yummy dogfood!)
+- Further capistrano 3 fixes
+- Misc minor fixes
+
+2.16.1
+-----------
+
+- Revert usage of `resolv-replace`.  MRI's native DNS lookup releases the GIL.
+- Fix several Capistrano 3 issues
+- Escaping dynamic data like job args and error messages in Sidekiq Web UI. [#1299, lian]
+
+2.16.0
+-----------
+
+- Deprecate `Sidekiq::Client.registered_workers` and `Sidekiq::Client.registered_queues`
+- Refactor Sidekiq::Client to be instance-based [#1279]
+- Pass all Redis options to the Redis driver so Unix sockets
+  can be fully configured. [#1270, salimane]
+- Allow sidekiq-web extensions to add locale paths so extensions
+  can be localized. [#1261, ondrejbartas]
+- Capistrano 3 support [#1254, phallstrom]
+- Use Ruby's `resolv-replace` to enable pure Ruby DNS lookups.
+  This ensures that any DNS resolution that takes place in worker
+  threads won't lock up the entire VM on MRI. [#1258]
+
+2.15.2
+-----------
+
+- Iterating over Sidekiq::Queue and Sidekiq::SortedSet will now work as
+  intended when jobs are deleted [#866, aackerman]
+- A few more minor Web UI fixes [#1247]
+
+2.15.1
+-----------
+
+- Fix several Web UI issues with the Bootstrap 3 upgrade.
+
+2.15.0
+-----------
+
+- The Core Sidekiq actors are now monitored.  If any crash, the
+  Sidekiq process logs the error and exits immediately.  This is to
+  help prevent "stuck" Sidekiq processes which are running but don't
+  appear to be doing any work. [#1194]
+- Sidekiq's testing behavior is now dynamic.  You can choose between
+  `inline` and `fake` behavior in your tests. See
+[Testing](https://github.com/mperham/sidekiq/wiki/Testing) for detail. [#1193]
+- The Retries table has a new column for the error message.
+- The Web UI topbar now contains the status and live poll button.
+- Orphaned worker records are now auto-vacuumed when you vist the
+  Workers page in the Web UI.
+- Sidekiq.default\_worker\_options allows you to configure default
+  options for all Sidekiq worker types.
+
+```ruby
+Sidekiq.default_worker_options = { 'queue' => 'default', 'backtrace' => true }
+```
+- Added two Sidekiq::Client class methods for compatibility with resque-scheduler:
+  `enqueue_to_in` and `enqueue_in` [#1212]
+- Upgrade Web UI to Bootstrap 3.0. [#1211, jeffboek]
+
+2.14.1
+-----------
+
+- Fix misc Web UI issues due to ERB conversion.
+- Bump redis-namespace version due to security issue.
+
+2.14.0
+-----------
+
+- Removed slim gem dependency, Web UI now uses ERB [Locke23rus, #1120]
+- Fix more race conditions in Web UI actions
+- Don't reset Job enqueued\_at when retrying
+- Timestamp tooltips in the Web UI should use UTC
+- Fix invalid usage of handle\_exception causing issues in Airbrake
+  [#1134]
+
+
+2.13.1
+-----------
+
+- Make Sidekiq::Middleware::Chain Enumerable
+- Make summary bar and graphs responsive [manishval, #1025]
+- Adds a job status page for scheduled jobs [jonhyman]
+- Handle race condition in retrying and deleting jobs in the Web UI
+- The Web UI relative times are now i18n. [MadRabbit, #1088]
+- Allow for default number of retry attempts to be set for
+  `Sidekiq::Middleware::Server::RetryJobs` middleware. [czarneckid] [#1091]
+
+```ruby
+Sidekiq.configure_server do |config|
+  config.server_middleware do |chain|
+    chain.add Sidekiq::Middleware::Server::RetryJobs, :max_retries => 10
+  end
+end
+```
+
+
+2.13.0
+-----------
+
+- Adding button to move scheduled job to main queue [guiceolin, #1020]
+- fix i18n support resetting saved locale when job is retried [#1011]
+- log rotation via USR2 now closes the old logger [#1008]
+- Add ability to customize retry schedule, like so [jmazzi, #1027]
+
+```ruby
+class MyWorker
+  include Sidekiq::Worker
+  sidekiq_retry_in { |count| count * 2 }
+end
+```
+- Redesign Worker#retries\_exhausted callback to use same form as above [jmazzi, #1030]
+
+```ruby
+class MyWorker
+  include Sidekiq::Worker
+  sidekiq_retries_exhausted do |msg|
+    Rails.logger.error "Failed to process #{msg['class']} with args: #{msg['args']}"
+  end
+end
+```
+
+2.12.4
+-----------
+
+- Fix error in previous release which crashed the Manager when a
+  Processor died.
+
+2.12.3
+-----------
+
+- Revert back to Celluloid's TaskFiber for job processing which has proven to be more
+  stable than TaskThread. [#985]
+- Avoid possible lockup during hard shutdown [#997]
+
+At this point, if you are experiencing stability issues with Sidekiq in
+Ruby 1.9, please try Ruby 2.0.  It seems to be more stable.
+
 2.12.2
 -----------
 

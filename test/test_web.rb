@@ -3,7 +3,7 @@ require 'sidekiq'
 require 'sidekiq/web'
 require 'rack/test'
 
-class TestWeb < Minitest::Test
+class TestWeb < Sidekiq::Test
   describe 'sidekiq web' do
     include Rack::Test::Methods
 
@@ -76,6 +76,26 @@ class TestWeb < Minitest::Test
       end
     end
 
+    it 'can clear an empty worker list' do
+      post '/reset'
+      assert_equal 302, last_response.status
+    end
+
+    it 'can clear a non-empty worker list' do
+      Sidekiq.redis do |conn|
+        identity = 'foo'
+        conn.sadd('workers', identity)
+      end
+
+      post '/reset'
+
+      assert_equal 302, last_response.status
+
+      Sidekiq.redis do |conn|
+        refute conn.smembers('workers').any?
+      end
+    end
+
     it 'can delete a job' do
       Sidekiq.redis do |conn|
         conn.rpush('queue:foo', "{}")
@@ -110,7 +130,7 @@ class TestWeb < Minitest::Test
 
     it 'can display a single retry' do
       params = add_retry
-      get '/retries/2c4c17969825a384a92f023b'
+      get '/retries/0-shouldntexist'
       assert_equal 302, last_response.status
       get "/retries/#{job_params(*params)}"
       assert_equal 200, last_response.status
@@ -118,7 +138,7 @@ class TestWeb < Minitest::Test
     end
 
     it 'handles missing retry' do
-      get "/retries/2c4c17969825a384a92f023b"
+      get "/retries/0-shouldntexist"
       assert_equal 302, last_response.status
     end
 
@@ -167,6 +187,42 @@ class TestWeb < Minitest::Test
       assert_match /HardWorker/, last_response.body
     end
 
+    it 'can display a single scheduled job' do
+      params = add_scheduled
+      get '/scheduled/0-shouldntexist'
+      assert_equal 302, last_response.status
+      get "/scheduled/#{job_params(*params)}"
+      assert_equal 200, last_response.status
+      assert_match /HardWorker/, last_response.body
+    end
+
+    it 'handles missing scheduled job' do
+      get "/scheduled/0-shouldntexist"
+      assert_equal 302, last_response.status
+    end
+
+    it 'can add to queue a single scheduled job' do
+      params = add_scheduled
+      post "/scheduled/#{job_params(*params)}", 'add_to_queue' => true
+      assert_equal 302, last_response.status
+      assert_equal 'http://example.org/scheduled', last_response.header['Location']
+
+      get '/queues/default'
+      assert_equal 200, last_response.status
+      assert_match /#{params.first['args'][2]}/, last_response.body
+    end
+
+    it 'can delete a single scheduled job' do
+      params = add_scheduled
+      post "/scheduled/#{job_params(*params)}", 'delete' => 'Delete'
+      assert_equal 302, last_response.status
+      assert_equal 'http://example.org/scheduled', last_response.header['Location']
+
+      get "/scheduled"
+      assert_equal 200, last_response.status
+      refute_match /#{params.first['args'][2]}/, last_response.body
+    end
+
     it 'can delete scheduled' do
       params = add_scheduled
       Sidekiq.redis do |conn|
@@ -175,6 +231,23 @@ class TestWeb < Minitest::Test
         assert_equal 302, last_response.status
         assert_equal 'http://example.org/scheduled', last_response.header['Location']
         assert_equal 0, conn.zcard('schedule')
+      end
+    end
+
+    it "can move scheduled to default queue" do
+      q = Sidekiq::Queue.new
+      params = add_scheduled
+      Sidekiq.redis do |conn|
+        assert_equal 1, conn.zcard('schedule')
+        assert_equal 0, q.size
+        post '/scheduled', 'key' => [job_params(*params)], 'add_to_queue' => 'AddToQueue'
+        assert_equal 302, last_response.status
+        assert_equal 'http://example.org/scheduled', last_response.header['Location']
+        assert_equal 0, conn.zcard('schedule')
+        assert_equal 1, q.size
+        get '/queues/default'
+        assert_equal 200, last_response.status
+        assert_match /#{params[0]['args'][2]}/, last_response.body
       end
     end
 
@@ -192,6 +265,47 @@ class TestWeb < Minitest::Test
       assert_match /#{msg['args'][2]}/, last_response.body
     end
 
+    it 'escape job args and error messages' do
+      # on /retries page
+      params = add_xss_retry
+      get '/retries'
+      assert_equal 200, last_response.status
+      assert_match /FailWorker/, last_response.body
+
+      assert last_response.body.include?( "fail message: &lt;a&gt;hello&lt;&#x2F;a&gt;" )
+      assert !last_response.body.include?( "fail message: <a>hello</a>" )
+
+      assert last_response.body.include?( "args\">&quot;&lt;a&gt;hello&lt;&#x2F;a&gt;&quot;<" )
+      assert !last_response.body.include?( "args\"><a>hello</a><" )
+
+
+      # on /workers page
+      Sidekiq.redis do |conn|
+        identity = 'foo:1234-123abc:default'
+        conn.sadd('workers', identity)
+        conn.setex("worker:#{identity}:started", 10, Time.now.to_s)
+        hash = {:queue => 'critical', :payload => { 'class' => "FailWorker", 'args' => ["<a>hello</a>"] }, :run_at => Time.now.to_i }
+        conn.setex("worker:#{identity}", 10, Sidekiq.dump_json(hash))
+      end
+
+      get '/workers'
+      assert_equal 200, last_response.status
+      assert_match /FailWorker/, last_response.body
+      assert last_response.body.include?( "&lt;a&gt;hello&lt;&#x2F;a&gt;" )
+      assert !last_response.body.include?( "<a>hello</a>" )
+
+
+      # on /queues page
+      params = add_xss_retry # sorry, don't know how to easily make this show up on queues page otherwise.
+      post "/retries/#{job_params(*params)}", 'retry' => 'Retry'
+      assert_equal 302, last_response.status
+
+      get '/queues/foo'
+      assert_equal 200, last_response.status
+      assert last_response.body.include?( "&lt;a&gt;hello&lt;&#x2F;a&gt;" )
+      assert !last_response.body.include?( "<a>hello</a>" )
+    end
+
     it 'can show user defined tab' do
       begin
         Sidekiq::Web.tabs['Custom Tab'] = '/custom'
@@ -207,6 +321,22 @@ class TestWeb < Minitest::Test
     it 'can display home' do
       get '/'
       assert_equal 200, last_response.status
+    end
+
+    Sidekiq::Web.settings.locales << File.join(File.dirname(__FILE__), "fixtures")
+    it 'can show user defined tab with custom locales' do
+      begin
+        Sidekiq::Web.tabs['Custom Tab'] = '/custom'
+        Sidekiq::Web.get('/custom') do
+          t('translated_text')
+        end
+
+        get '/custom'
+        assert_match /Changed text/, last_response.body
+
+      ensure
+        Sidekiq::Web.tabs.delete 'Custom Tab'
+      end
     end
 
     describe 'stats' do
@@ -251,6 +381,10 @@ class TestWeb < Minitest::Test
         it 'reports scheduled' do
           assert_equal 3, @response["sidekiq"]["scheduled"]
         end
+
+        it 'reports latency' do
+          assert_equal 0, @response["sidekiq"]["default_latency"]
+        end
       end
 
       describe "for redis" do
@@ -276,6 +410,22 @@ class TestWeb < Minitest::Test
               'args' => ['bob', 1, Time.now.to_f],
               'queue' => 'default',
               'error_message' => 'Some fake message',
+              'error_class' => 'RuntimeError',
+              'retry_count' => 0,
+              'failed_at' => Time.now.utc,
+              'jid' => 'f39af2a05e8f4b24dbc0f1e4'}
+      score = Time.now.to_f
+      Sidekiq.redis do |conn|
+        conn.zadd('retry', score, Sidekiq.dump_json(msg))
+      end
+      [msg, score]
+    end
+
+    def add_xss_retry
+      msg = { 'class' => 'FailWorker',
+              'args' => ['<a>hello</a>'],
+              'queue' => 'foo',
+              'error_message' => 'fail message: <a>hello</a>',
               'error_class' => 'RuntimeError',
               'retry_count' => 0,
               'failed_at' => Time.now.utc,

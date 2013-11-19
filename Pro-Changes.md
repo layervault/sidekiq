@@ -3,6 +3,91 @@ Sidekiq Pro Changelog
 
 Please see http://sidekiq.org/pro for more details and how to buy.
 
+HEAD
+-----------
+
+Thanks to Jon Hyman for his contributions to this Sidekiq Pro release.
+
+This release offers new functionality based on the SCAN command newly
+added to Redis 2.8.
+
+- Job Filtering in the Web UI!
+  You can now filter retries and scheduled jobs in the Web UI so you
+  only see the jobs relevant to your needs.  Queues cannot be filtered;
+  Redis does not provide the same SCAN operation on the LIST type.
+- SCAN support in the Sidekiq::SortedSet API.  Here's an example that
+  finds all jobs which contain the substring "Warehouse::OrderShip"
+  and deletes all matching retries.  If the set is large, this API
+  will be **MUCH** faster than standard iteration using each.
+```ruby
+  Sidekiq::RetrySet.new.scan("Warehouse::OrderShip") do |entry|
+    entry.delete
+  end
+```
+
+- Sidekiq::Batch#jobs now returns the set of JIDs added to the batch.
+- Sidekiq::Batch#jids returns the complete set of JIDs associated with the batch.
+- Sidekiq::Batch#remove\_jobs(jid, jid, ...) removes JIDs from the set, allowing early termination of jobs if they become irrelevant according to application logic.
+- Sidekiq::Batch#include?(jid) allows jobs to check if they are still
+  relevant to a Batch and exit early if not.
+- Change shutdown logic to minimize Redis round-trips with Reliable Fetch.
+- Sidekiq::SortedSet#find\_job(jid) now uses server-side Lua if running Redis 2.6. [jonhyman]
+- Pro now requires 2.17.0
+
+1.2.5
+-----------
+
+- Convert Batch UI to use Sidekiq 2.16's support for extension localization.
+- Update reliable\_push to work with Sidekiq::Client refactoring in 2.16
+- Pro now requires Sidekiq 2.16.0
+
+1.2.4
+-----------
+
+- Convert Batch UI to Bootstrap 3
+- Pro now requires Sidekiq 2.15.0
+- Add Sidekiq::Batch::Status#delete [#1205]
+
+1.2.3
+-----------
+
+- Pro now requires Sidekiq 2.14.0
+- Fix bad exception handling in batch callbacks [#1134]
+- Convert Batch UI to ERB
+
+1.2.2
+-----------
+
+- Problem with reliable fetch which could lead to lost jobs when Sidekiq
+  is shut down normally.  Thanks to MikaelAmborn for the report. [#1109]
+
+1.2.1
+-----------
+
+- Forgot to push paging code necessary for `delete_job` performance.
+
+1.2.0
+-----------
+
+- **LEAK** Fix batch key which didn't expire in Redis.  Keys match
+  /b-[a-f0-9]{16}-pending/, e.g. "b-4f55163ddba10aa0-pending" [#1057]
+- **Reliable fetch now supports multiple queues**, using the algorithm spec'd
+  by @jackrg [#1102]
+- Fix issue with reliable\_push where it didn't return the JID for a pushed
+  job when sending previously cached jobs to Redis.
+- Add fast Sidekiq::Queue#delete\_job(jid) API which leverages Lua so job lookup is
+  100% server-side.  Benchmark vs Sidekiq's Job#delete API:
+
+```
+Sidekiq Pro API
+  0.030000   0.020000   0.050000 (  1.640659)
+Sidekiq API
+ 17.250000   2.220000  19.470000 ( 22.193300)
+```
+
+- Add fast Sidekiq::Queue#delete\_by\_class(klass) API to remove all
+  jobs of a given type.  Uses server-side Lua for performance.
+
 1.1.0
 -----------
 

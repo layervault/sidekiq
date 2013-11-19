@@ -1,3 +1,3 @@
 module Sidekiq
-  VERSION = "2.12.4"
+  VERSION = "2.17.0"
 end

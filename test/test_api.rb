@@ -1,6 +1,6 @@
 require 'helper'
 
-class TestApi < Minitest::Test
+class TestApi < Sidekiq::Test
   describe "stats" do
     before do
       Sidekiq.redis {|c| c.flushdb }
@@ -172,12 +172,44 @@ class TestApi < Minitest::Test
       assert_equal 0, q.size
     end
 
+    it "can move scheduled job to queue" do
+      job_id = ApiWorker.perform_in(100, 1, 'jason')
+      job = Sidekiq::ScheduledSet.new.find_job(job_id)
+      q = Sidekiq::Queue.new
+      job.add_to_queue
+      queued_job = q.find_job(job_id)
+      refute_nil queued_job
+      assert_equal queued_job.jid, job_id
+      job = Sidekiq::ScheduledSet.new.find_job(job_id)
+      assert_nil job
+    end
+
     it 'can find job by id in sorted sets' do
       job_id = ApiWorker.perform_in(100, 1, 'jason')
       job = Sidekiq::ScheduledSet.new.find_job(job_id)
       refute_nil job
       assert_equal job_id, job.jid
       assert_in_delta job.latency, 0.0, 0.01
+    end
+
+    it 'can remove jobs when iterating over a sorted set' do
+      # scheduled jobs must be greater than SortedSet#each underlying page size
+      51.times do
+        ApiWorker.perform_in(100, 'aaron')
+      end
+      set = Sidekiq::ScheduledSet.new
+      set.map(&:delete)
+      assert_equal set.size, 0
+    end
+
+    it 'can remove jobs when iterating over a queue' do
+      # initial queue size must be greater than Queue#each underlying page size
+      51.times do
+        ApiWorker.perform_async(1, 'aaron')
+      end
+      q = Sidekiq::Queue.new
+      q.map(&:delete)
+      assert_equal q.size, 0
     end
 
     it 'can find job by id in queues' do
